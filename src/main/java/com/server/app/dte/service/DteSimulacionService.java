@@ -6,6 +6,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.server.app.dte.dto.DteDocumento;
 import com.server.app.dte.dto.DteRespuesta;
+import com.server.app.dte.model.DteAlmacenado;
+import com.server.app.dte.repository.DteAlmacenadoRepository;
 import com.server.app.dte.validation.CodigoMensaje;
 import com.server.app.dte.validation.DteValidator;
 import com.server.app.dte.validation.Hallazgo;
@@ -19,22 +21,19 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 
 /**
- * Simula el flujo de recepción de un DTE: validación, sello de recepción, firma y consulta. El estado vive en memoria
- * (se pierde al reiniciar); no hay persistencia ni comunicación con el Ministerio de Hacienda.
+ * Simula el flujo de recepción de un DTE: validación, sello de recepción, firma y consulta. Los documentos aceptados
+ * se almacenan en la base de datos; no hay comunicación con el Ministerio de Hacienda.
  */
 @Service
 public class DteSimulacionService {
@@ -44,35 +43,36 @@ public class DteSimulacionService {
   private static final DateTimeFormatter FH = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss");
   private static final String ALFANUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
-  /** DTE aceptado: documento original, respuesta con el sello y firma simulada. */
-  public record Registrado(JsonNode documento, DteRespuesta respuesta, String firma) {
-  }
-
   /** Archivo DTE entregable al receptor (Manual Técnico 6.5) y URL del código QR (sección 5). */
   public record ArchivoDte(JsonNode archivo, String urlQr) {
   }
 
   private final ObjectMapper mapper;
   private final DteValidator validator;
+  private final DteAlmacenadoRepository repository;
   private final byte[] secretoFirma;
   private final Clock clock;
   private final SecureRandom random = new SecureRandom();
-
-  private final Map<String, Registrado> porCodigoGeneracion = new HashMap<>();
-  private final Set<String> numerosControl = new HashSet<>();
 
   @Autowired
   public DteSimulacionService(
       ObjectMapper mapper,
       DteValidator validator,
+      DteAlmacenadoRepository repository,
       @Value("${dte.simulacion.firma-secreto:simulacion-dte-no-usar-en-produccion-0123456789}") String secreto,
       @Value("${dte.simulacion.zona-horaria:America/El_Salvador}") String zona) {
-    this(mapper, validator, secreto, Clock.system(ZoneId.of(zona)));
+    this(mapper, validator, repository, secreto, Clock.system(ZoneId.of(zona)));
   }
 
-  public DteSimulacionService(ObjectMapper mapper, DteValidator validator, String secreto, Clock clock) {
+  DteSimulacionService(
+      ObjectMapper mapper,
+      DteValidator validator,
+      DteAlmacenadoRepository repository,
+      String secreto,
+      Clock clock) {
     this.mapper = mapper;
     this.validator = validator;
+    this.repository = repository;
     this.secretoFirma = secreto.getBytes(StandardCharsets.UTF_8);
     this.clock = clock;
   }
@@ -106,13 +106,12 @@ public class DteSimulacionService {
     }
 
     // Duplicados (código 4): el código de generación y el número de control no pueden repetirse.
-    String claveControl = doc.emisor().nit() + "|" + doc.identificacion().numeroControl();
     synchronized (this) {
       List<Hallazgo> dup = new ArrayList<>();
-      if (porCodigoGeneracion.containsKey(codGen)) {
+      if (repository.existsByCodigoGeneracion(codGen)) {
         dup.add(new Hallazgo(CodigoMensaje.YA_EXISTE, "identificacion.codigoGeneracion", null));
       }
-      if (numerosControl.contains(claveControl)) {
+      if (repository.existsByNitEmisorAndNumeroControl(doc.emisor().nit(), doc.identificacion().numeroControl())) {
         dup.add(new Hallazgo(CodigoMensaje.YA_EXISTE, "identificacion.numeroControl", null));
       }
       if (!dup.isEmpty()) {
@@ -125,37 +124,72 @@ public class DteSimulacionService {
           sello, ahora(), "10",
           (conObs ? CodigoMensaje.RECIBIDO_CON_OBSERVACIONES : CodigoMensaje.RECIBIDO).codigoMsg(),
           (conObs ? CodigoMensaje.RECIBIDO_CON_OBSERVACIONES : CodigoMensaje.RECIBIDO).descripcion(), obs);
-      porCodigoGeneracion.put(codGen, new Registrado(nodo.deepCopy(), ok, firmar(nodo)));
-      numerosControl.add(claveControl);
+      String respuestaJson;
+      try {
+        respuestaJson = mapper.writeValueAsString(ok);
+      } catch (JsonProcessingException e) {
+        throw new IllegalStateException("No se pudo serializar la respuesta DTE para almacenarla.", e);
+      }
+      DteAlmacenado almacenado = new DteAlmacenado(
+          codGen,
+          doc.emisor().nit(),
+          doc.identificacion().numeroControl(),
+          nodo.toString(),
+          respuestaJson,
+          firmar(nodo));
+      try {
+        repository.saveAndFlush(almacenado);
+      } catch (DataIntegrityViolationException e) {
+        List<Hallazgo> duplicadosConcurrentes = new ArrayList<>();
+        if (repository.existsByCodigoGeneracion(codGen)) {
+          duplicadosConcurrentes.add(new Hallazgo(CodigoMensaje.YA_EXISTE, "identificacion.codigoGeneracion", null));
+        }
+        if (repository.existsByNitEmisorAndNumeroControl(
+            doc.emisor().nit(), doc.identificacion().numeroControl())) {
+          duplicadosConcurrentes.add(new Hallazgo(CodigoMensaje.YA_EXISTE, "identificacion.numeroControl", null));
+        }
+        if (duplicadosConcurrentes.isEmpty()) {
+          throw e;
+        }
+        return rechazo(codGen, ambiente, duplicadosConcurrentes);
+      }
       return ok;
     }
   }
 
   public Optional<DteRespuesta> consultar(String codigoGeneracion) {
-    synchronized (this) {
-      return Optional.ofNullable(porCodigoGeneracion.get(codigoGeneracion)).map(Registrado::respuesta);
-    }
+    return repository.findByCodigoGeneracion(codigoGeneracion).map(this::respuestaDe);
   }
 
   /** Archivo DTE: estructura de datos + firmaElectronica + selloRecibido, y la URL del QR. */
   public Optional<ArchivoDte> archivo(String codigoGeneracion) {
-    Registrado reg;
-    synchronized (this) {
-      reg = porCodigoGeneracion.get(codigoGeneracion);
-    }
-    if (reg == null) {
-      return Optional.empty();
-    }
-    ObjectNode archivo = reg.documento().deepCopy();
-    archivo.put("firmaElectronica", reg.firma());
-    archivo.put("selloRecibido", reg.respuesta().selloRecibido());
-    String fecEmi = reg.documento().path("identificacion").path("fecEmi").asText();
-    String url = "https://admin.factura.gob.sv/consultaPublica?ambiente=" + reg.respuesta().ambiente()
+    return repository.findByCodigoGeneracion(codigoGeneracion).map(reg -> {
+      JsonNode documento;
+      try {
+        documento = mapper.readTree(reg.getDocumentoJson());
+      } catch (JsonProcessingException e) {
+        throw new IllegalStateException("No se pudo leer el documento DTE almacenado.", e);
+      }
+      DteRespuesta respuesta = respuestaDe(reg);
+      ObjectNode archivo = ((ObjectNode) documento).deepCopy();
+      archivo.put("firmaElectronica", reg.getFirma());
+      archivo.put("selloRecibido", respuesta.selloRecibido());
+      String fecEmi = documento.path("identificacion").path("fecEmi").asText();
+      String url = "https://admin.factura.gob.sv/consultaPublica?ambiente=" + respuesta.ambiente()
         + "&codGen=" + codigoGeneracion + "&fechaEmi=" + fecEmi;
-    return Optional.of(new ArchivoDte(archivo, url));
+      return new ArchivoDte(archivo, url);
+    });
   }
 
   // ───────────────────────────── Internos ─────────────────────────────
+
+  private DteRespuesta respuestaDe(DteAlmacenado registrado) {
+    try {
+      return mapper.readValue(registrado.getRespuestaJson(), DteRespuesta.class);
+    } catch (JsonProcessingException e) {
+      throw new IllegalStateException("No se pudo leer la respuesta DTE almacenada.", e);
+    }
+  }
 
   private DteRespuesta rechazo(String codGen, String ambiente, List<Hallazgo> errores) {
     Hallazgo primero = errores.get(0);
