@@ -1,0 +1,53 @@
+# Build outputs
+target/
+build/
+*.class
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+*.launch
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Logs
+*.log
+logs/
+
+# Entornos y secretos — NUNCA deben entrar a la imagen
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.jks
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Tests y cobertura
+**/src/test/
+*.exec
+
+# Documentación / misceláneos
+README.md
+*.md
+docs/
+
+# Archivos temporales
+*.tmp
+*.swp
+*.bak
