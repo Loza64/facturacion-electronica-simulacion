@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: spring-app
+    container_name: spring-app-facturacion
     restart: unless-stopped
     ports:
       - "${SERVER_PORT}:${SERVER_PORT}"
