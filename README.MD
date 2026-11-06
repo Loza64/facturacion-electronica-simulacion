@@ -10,9 +10,9 @@ Módulo independiente que simula la recepción de **Documentos Tributarios Elect
 |---|---|
 | Factura Electrónica (`01`) y Comprobante de Crédito Fiscal Electrónico (`03`) | Los demás tipos de DTE (04–09, 11, 14, 15). Se rechazan con el código 95 |
 | Validación completa de estructura, catálogos y cálculos | Eventos: invalidación, contingencia, retorno y operaciones especiales |
-| Sello de recepción y firma simulados | Firma real con certificado, conexión con Hacienda y persistencia en base de datos |
+| Sello de recepción y firma simulados; almacenamiento de DTE aceptados en la base de datos | Firma real con certificado y conexión con Hacienda |
 
-Es una simulación. Los DTE aceptados viven **en memoria** y se pierden al reiniciar la aplicación.
+Es una simulación. Los DTE aceptados se almacenan en la base de datos y pueden consultarse mientras esta conserve los registros.
 
 ### 14.2 Estructura
 
@@ -35,10 +35,13 @@ Los endpoints de `/api/dte` quedan protegidos por el `SecurityConfig` existente 
 | Método | Ruta | Equivale a | Descripción |
 |---|---|---|---|
 | POST | `/api/dte` | `/fesv/recepciondte` | Valida el DTE. Responde 200 si `PROCESADO` y 400 si `RECHAZADO` |
+| GET | `/api/dte` | — | Lista los DTE almacenados con paginación; `search` busca por código de generación, NIT o número de control |
 | GET | `/api/dte/{codigoGeneracion}` | `consultadte` | Devuelve la respuesta de recepción de un DTE aceptado. 404 si no existe |
 | GET | `/api/dte/{codigoGeneracion}/archivo` | Archivo DTE (Manual Técnico 6.5) | Devuelve el JSON original con `firmaElectronica` y `selloRecibido`, más la URL del código QR |
 
 El POST recibe el JSON del DTE tal cual (`Content-Type: application/json`). Si el cuerpo viene vacío o mal formado, responde `RECHAZADO` con los códigos 97 o 98 en lugar de un error genérico.
+
+El listado acepta los parámetros de paginación `page` (inicia en 1), `size` y `sort`. Por ejemplo, `GET /api/dte?search=06140000000011&page=1&size=10&sort=id,desc`. La respuesta usa `data` y `pagination` (`page`, `pageSize`, `pageCount`, `total`).
 
 ### 14.5 Validaciones
 

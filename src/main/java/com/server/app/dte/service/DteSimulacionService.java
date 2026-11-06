@@ -4,10 +4,12 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.server.app.dte.dto.DteAlmacenadoDto;
 import com.server.app.dte.dto.DteDocumento;
 import com.server.app.dte.dto.DteRespuesta;
 import com.server.app.dte.model.DteAlmacenado;
 import com.server.app.dte.repository.DteAlmacenadoRepository;
+import com.server.app.dte.repository.specification.DteAlmacenadoSpecifications;
 import com.server.app.dte.validation.CodigoMensaje;
 import com.server.app.dte.validation.DteValidator;
 import com.server.app.dte.validation.Hallazgo;
@@ -24,12 +26,15 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Simula el flujo de recepción de un DTE: validación, sello de recepción, firma y consulta. Los documentos aceptados
@@ -159,6 +164,24 @@ public class DteSimulacionService {
 
   public Optional<DteRespuesta> consultar(String codigoGeneracion) {
     return repository.findByCodigoGeneracion(codigoGeneracion).map(this::respuestaDe);
+  }
+
+  @Transactional(readOnly = true)
+  public Page<DteAlmacenadoDto> listar(String search, Pageable pageable) {
+    return repository.findAll(DteAlmacenadoSpecifications.search(search), pageable)
+        .map(registrado -> {
+          try {
+            JsonNode documento = mapper.readTree(registrado.getDocumentoJson());
+            return new DteAlmacenadoDto(
+                registrado.getCodigoGeneracion(),
+                registrado.getNitEmisor(),
+                registrado.getNumeroControl(),
+                documento,
+                respuestaDe(registrado));
+          } catch (JsonProcessingException e) {
+            throw new IllegalStateException("No se pudo leer el documento DTE almacenado.", e);
+          }
+        });
   }
 
   /** Archivo DTE: estructura de datos + firmaElectronica + selloRecibido, y la URL del QR. */

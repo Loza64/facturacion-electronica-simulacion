@@ -63,6 +63,14 @@ public class DteAlmacenado {
     return codigoGeneracion;
   }
 
+  public String getNitEmisor() {
+    return nitEmisor;
+  }
+
+  public String getNumeroControl() {
+    return numeroControl;
+  }
+
   public String getDocumentoJson() {
     return documentoJson;
   }

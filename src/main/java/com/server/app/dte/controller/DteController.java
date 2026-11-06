@@ -1,6 +1,9 @@
 package com.server.app.dte.controller;
 
 import com.server.app.common.exceptions.NotFoundException;
+import com.server.app.common.pagination.PaginationMapper;
+import com.server.app.common.pagination.PaginationResponse;
+import com.server.app.dte.dto.DteAlmacenadoDto;
 import com.server.app.dte.dto.DteDocumento;
 import com.server.app.dte.dto.DteRespuesta;
 import com.server.app.dte.service.DteSimulacionService;
@@ -9,6 +12,9 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.ExampleObject;
 import io.swagger.v3.oas.annotations.media.Schema;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -16,6 +22,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -29,9 +36,18 @@ import org.springframework.web.bind.annotation.RestController;
 public class DteController {
 
   private final DteSimulacionService service;
+  private final PaginationMapper paginationMapper;
 
-  public DteController(DteSimulacionService service) {
+  public DteController(DteSimulacionService service, PaginationMapper paginationMapper) {
     this.service = service;
+    this.paginationMapper = paginationMapper;
+  }
+
+  @GetMapping
+  public ResponseEntity<PaginationResponse<DteAlmacenadoDto>> listar(
+      @RequestParam(required = false) String search,
+      @PageableDefault(sort = "id", direction = Sort.Direction.DESC) Pageable pageable) {
+    return ResponseEntity.ok(paginationMapper.toPaginationResponse(service.listar(search, pageable)));
   }
 
   /** Recibe el JSON del DTE tal cual (se lee como texto para responder con código 97/98 si viene mal formado). */
